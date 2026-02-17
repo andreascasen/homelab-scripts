@@ -1,0 +1,155 @@
+#!/bin/bash
+
+# renameFiles - A script to replace strings in file names
+# Only operates on files in the current directory (no subdirectories)
+
+echo "=== File Renaming Script ==="
+echo
+
+# Prompt for file extensions
+echo "Enter file extensions to target (e.g., .mp3, .txt, .pdf):"
+echo "Leave blank and press Enter to target ALL files in current directory"
+read -p "Extensions: " extensions
+
+# Prompt for string to remove/replace (required)
+while true; do
+    read -p "Enter the string to remove/replace from filenames: " search_string
+    if [[ -n "$search_string" ]]; then
+        break
+    else
+        echo "Error: This field is required. Please enter a string to search for."
+    fi
+done
+
+# Prompt for replacement string (optional)
+echo "Enter replacement string (leave blank to simply remove the search string):"
+read -p "Replacement: " replacement_string
+
+echo
+echo "=== Configuration ==="
+if [[ -z "$extensions" ]]; then
+    echo "Target: ALL files in current directory"
+else
+    echo "Target extensions: $extensions"
+fi
+echo "Search string: '$search_string'"
+if [[ -z "$replacement_string" ]]; then
+    echo "Action: Remove search string"
+else
+    echo "Replacement string: '$replacement_string'"
+fi
+echo
+
+# Build file list based on extensions
+files_to_process=()
+
+if [[ -z "$extensions" ]]; then
+    # Target all files in current directory (not subdirectories)
+    while IFS= read -r -d '' file; do
+        if [[ -f "$file" ]]; then
+            files_to_process+=("$file")
+        fi
+    done < <(find . -maxdepth 1 -type f -print0)
+else
+    # Target specific extensions
+    IFS=',' read -ra ext_array <<< "$extensions"
+    for ext in "${ext_array[@]}"; do
+        # Trim whitespace
+        ext=$(echo "$ext" | xargs)
+        # Add leading dot if not present
+        if [[ ! "$ext" =~ ^\. ]]; then
+            ext=".$ext"
+        fi
+        # Find files with this extension in current directory only
+        while IFS= read -r -d '' file; do
+            if [[ -f "$file" ]]; then
+                files_to_process+=("$file")
+            fi
+        done < <(find . -maxdepth 1 -name "*$ext" -type f -print0)
+    done
+fi
+
+# Remove duplicates and sort
+if [[ ${#files_to_process[@]} -gt 0 ]]; then
+    # Create a temporary file to handle the sorting
+    temp_file=$(mktemp)
+    printf '%s\n' "${files_to_process[@]}" | sort -u > "$temp_file"
+    files_to_process=()
+    while IFS= read -r line; do
+        files_to_process+=("$line")
+    done < "$temp_file"
+    rm "$temp_file"
+fi
+
+# Check if any files were found
+if [[ ${#files_to_process[@]} -eq 0 ]]; then
+    echo "No files found matching the criteria."
+    exit 0
+fi
+
+echo "Found ${#files_to_process[@]} file(s) to process:"
+echo
+
+# Preview changes
+changes_found=false
+declare -a rename_operations
+
+for file in "${files_to_process[@]}"; do
+    # Remove the ./ prefix for cleaner display
+    display_name="${file#./}"
+    
+    # Check if the search string exists in the filename
+    if [[ "$display_name" == *"$search_string"* ]]; then
+        # Use sed for more reliable string replacement, especially with special characters
+        new_name=$(echo "$display_name" | sed "s/$(printf '%s\n' "$search_string" | sed 's/[[\.*^$()+?{|]/\\&/g')/$(printf '%s\n' "$replacement_string" | sed 's/[[\.*^$()+?{|]/\\&/g')/")
+        echo "  '$display_name' -> '$new_name'"
+        rename_operations+=("$display_name|$new_name")
+        changes_found=true
+    fi
+done
+
+if [[ "$changes_found" == false ]]; then
+    echo "No files contain the search string '$search_string'."
+    exit 0
+fi
+
+echo
+read -p "Proceed with renaming? (y/N): " confirm
+
+if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Operation cancelled."
+    exit 0
+fi
+
+echo
+echo "=== Renaming Files ==="
+
+# Perform the renaming
+success_count=0
+error_count=0
+
+for operation in "${rename_operations[@]}"; do
+    IFS='|' read -r old_name new_name <<< "$operation"
+    
+    if [[ -e "$new_name" && "$old_name" != "$new_name" ]]; then
+        echo "ERROR: '$new_name' already exists. Skipping '$old_name'."
+        ((error_count++))
+        continue
+    fi
+    
+    if mv "$old_name" "$new_name" 2>/dev/null; then
+        echo "✓ Renamed: '$old_name' -> '$new_name'"
+        ((success_count++))
+    else
+        echo "✗ Failed to rename: '$old_name'"
+        ((error_count++))
+    fi
+done
+
+echo
+echo "=== Summary ==="
+echo "Successfully renamed: $success_count file(s)"
+if [[ $error_count -gt 0 ]]; then
+    echo "Errors encountered: $error_count file(s)"
+fi
+echo "Operation complete."
